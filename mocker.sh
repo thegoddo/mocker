@@ -21,7 +21,6 @@ while [[ $# -gt 0 && "${1:0:2}" == '--' ]]; do
     shift
 done
 
-
 function mocker_check() {
     if btrfs subvolume list "$btrfs_path" | rg -qw -- "$1"; then
         echo 0
@@ -30,13 +29,11 @@ function mocker_check() {
     fi
 }
 
-
-function mocker_init() {
+function mocker_init() { #HELP Create an image from a directory:\nMOCKER init <directory>
     local uuid
     uuid="img_$(shuf -i 42002-42254 -n 1)"
 
     if [[ -d "$1" ]]; then
-
         if [[ "$(mocker_check "$uuid")" == 0 ]]; then
             mocker_run "$@"
             return
@@ -44,26 +41,20 @@ function mocker_init() {
 
         btrfs subvolume create "$btrfs_path/$uuid" > /dev/null
 
-        cp -rf --reflink=auto "$1"/* "$btrfs_path/$uuid/" \
-            > /dev/null
+        cp -rf --reflink=auto "$1"/* "$btrfs_path/$uuid/" > /dev/null
 
         if [[ ! -f "$btrfs_path/$uuid/img.source" ]]; then
             echo "$1" > "$btrfs_path/$uuid/img.source"
         fi
 
         echo "Created: $uuid"
-
     else
-        echo "No directory named '$1' exists"
+        echo "No directory named '$1' exists" >&2
         return 1
     fi
 }
 
-
-function mocker_pull() {
-    # HELP Pull an image from Docker Hub:
-    # mocker pull <name> <tag>
-
+function mocker_pull() { #HELP Pull an image from Docker Hub:\nMOCKER pull <name> <tag>
     local token registry id ancestry tmp_uuid
     local -a layers
 
@@ -121,65 +112,72 @@ function mocker_pull() {
     rm -rf "/tmp/$tmp_uuid"
 }
 
-function mocker_run() {
-  uuid="ps_$(shuf -i 42002-42254 -n 1)"
-  [[ "$(mocker_check "$1")" == 1]] && echo "No image named '$1' exists" && exit 1
-  [[ "$(mocker_check "$uuid")" == 0]] && echo "UUID conflict, retrying..." mocker_run "$@"  && return
-  cmd="${@:2}" && ip="$(echo "${uuid: -3"}" | sed 's/0//g')" && mac="${uuid: -3:1}:${uuid: -2}"
-  
-  #Setup Network Interface Pair
-  ip link add dev veth0_"$uuid" type veth peer name veth1_"$uuid"
-  ip link set dev veth0_"$uuid" up
-  ip link set veth0_"$uuid" master bridge0
+function mocker_run() { #HELP Create a container:\nMOCKER run <image_id> <command>
+    local uuid cmd ip mac
+    uuid="ps_$(shuf -i 42002-42254 -n 1)"
 
-  # Create Isolated Network Namespace
-  ip netns add netns_"$uuid"
-  ip link set veth1_"$uuid" netns netns_"$uuid"
-  ip netns exec netns_"$uuid" ip link set lo up
-  ip netns exec netns_"$uuid" ip link set veth1_"$uuid" address 02:42:ac:11:00"$mac"
-  ip netns exec netns_"$uuid" ip addr add 10.0.0."$ip"/24 dev veth1_"$uuid"
-  ip netns exec netns_"$uuid" ip link set dev veth1_"$uuid" up
-  ip netns exec netns_"$uuid" ip route add default via 10.0.0.1 
+    [[ "$(mocker_check "$1")" == 1 ]] && echo "No image named '$1' exists" && exit 1
+    [[ "$(mocker_check "$uuid")" == 0 ]] && echo "UUID conflict, retrying..." && mocker_run "$@" && return
 
+    cmd="${@:2}"
+    ip="$(echo "${uuid: -3}" | sed 's/0//g')"
+    mac="${uuid: -3:1}:${uuid: -2}"
 
-  # Create writable Copy-on-Write snapshot
-  btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" > /dev/null
-  echo 'nameserver 8.8.8.8'> "$btrfs/$uuid"/etc/resolv.conf
+    # Setup Network Interface Pair
+    ip link add dev veth0_"$uuid" type veth peer name veth1_"$uuid"
+    ip link set dev veth0_"$uuid" up
+    ip link set veth0_"$uuid" master bridge0
 
-  # Enforce Cgroup Resource Limits
-  cgcreate -g "$cgroups:/$uuid"
-  : "${MOCKER_CPU_SHARE:=512}" && cgset -r cpu.shares="$MOCKER_CPU_SHARE" "$uuid"
-  : "${MOCKER_MEM_LIMIT:=512}" && cgset -r memory.limit_in_bytes="$((BOCKER_MEM_LIMIT * 1000000))"
+    # Create Isolated Network Namespace
+    ip netns add netns_"$uuid"
+    ip link set veth1_"$uuid" netns netns_"$uuid"
+    ip netns exec netns_"$uuid" ip link set lo up
+    ip netns exec netns_"$uuid" ip link set veth1_"$uuid" address 02:42:ac:11:00"$mac"
+    ip netns exec netns_"$uuid" ip addr add 10.0.0."$ip"/24 dev veth1_"$uuid"
+    ip netns exec netns_"$uuid" ip link set dev veth1_"$uuid" up
+    ip netns exec netns_"$uuid" ip route add default via 10.0.0.1 
 
-  # Execute containerized process
-  cgexec -g "$cgroups:$uuid" \
-    ip netns exec netns_"$uuid" \
-    unshare -fmuip --mount-proc \
-    chroot "$btrfs_path/$uuid" \
-    /bin/sh -c "/bin/mount -t proc proc /proc && $cmd" \
-    2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+    # Create writable Copy-on-Write snapshot
+    btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" > /dev/null
+    echo 'nameserver 8.8.8.8' > "$btrfs_path/$uuid/etc/resolv.conf"
+    echo "$cmd" > "$btrfs_path/$uuid/$uuid.cmd"
 
-  # Clean up network interfaces after exit
-  ip link del dev veth0_"$uuid"
-  ip netns del netns_"$uuid"
+    # Enforce Cgroup Resource Limits
+    cgcreate -g "$cgroups:/$uuid"
+    : "${MOCKER_CPU_SHARE:=512}" && cgset -r cpu.shares="$MOCKER_CPU_SHARE" "$uuid"
+    : "${MOCKER_MEM_LIMIT:=512}" && cgset -r memory.limit_in_bytes="$((MOCKER_MEM_LIMIT * 1000000))" "$uuid"
+
+    # Execute containerized process
+    cgexec -g "$cgroups:$uuid" \
+        ip netns exec netns_"$uuid" \
+        unshare -fmuip --mount-proc \
+        chroot "$btrfs_path/$uuid" \
+        /bin/sh -c "/bin/mount -t proc proc /proc && $cmd" \
+        2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+
+    # Clean up network interfaces after exit
+    ip link del dev veth0_"$uuid"
+    ip netns del netns_"$uuid"
 }
 
+function mocker_exec() { #HELP Execute a command in a running container:\nMOCKER exec <container_id> <command>
+    local cid
+    [[ "$(mocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
 
-function mocker_exec() {
-  [[ "$(mocker_check "$1")" == 1]] && echo "No container named '$1' exists"  && exit 1
-  cid="$(ps 0 ppid, pid | rg "^$(ps o pid, cmd | rg -e "^\ *[0-9]+ unshare.*$1" | awk '{print $1}" | awk '{print $2}')"
-  [[ ! "$cid" =~ ^\ *[0-9]+$ ]] && echo "Container '$1' exists but is not running" && exit 1
-  nsenter -t "$cid" -m -u -i -n -p chroot "$btrfs_path/$1" "${@:2}"
+    cid="$(ps o ppid,pid | rg "^$(ps o pid,cmd | rg -e "^\ *[0-9]+ unshare.*$1" | awk '{print $1}')" | awk '{print $2}')"
+    [[ ! "$cid" =~ ^\ *[0-9]+$ ]] && echo "Container '$1' exists but is not running" && exit 1
+
+    nsenter -t "$cid" -m -u -i -n -p chroot "$btrfs_path/$1" "${@:2}"
 }
 
-function bocker_rm() { #HELP Delete an image or container:\nBOCKER rm <image_id or container_id>
-    [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+function mocker_rm() { #HELP Delete an image or container:\nMOCKER rm <image_id or container_id>
+    [[ "$(mocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
     btrfs subvolume delete "$btrfs_path/$1" > /dev/null
     cgdelete -g "$cgroups:/$1" &> /dev/null || true
     echo "Removed: $1"
 }
 
-function bocker_images() { #HELP List images:\nBOCKER images
+function mocker_images() { #HELP List images:\nMOCKER images
     echo -e "IMAGE_ID\t\tSOURCE"
     for img in "$btrfs_path"/img_*; do
         img=$(basename "$img")
@@ -187,7 +185,7 @@ function bocker_images() { #HELP List images:\nBOCKER images
     done
 }
 
-function bocker_ps() { #HELP List containers:\nBOCKER ps
+function mocker_ps() { #HELP List containers:\nMOCKER ps
     echo -e "CONTAINER_ID\t\tCOMMAND"
     for ps in "$btrfs_path"/ps_*; do
         ps=$(basename "$ps")
@@ -195,26 +193,25 @@ function bocker_ps() { #HELP List containers:\nBOCKER ps
     done
 }
 
-function bocker_logs() { #HELP View logs from a container:\nBOCKER logs <container_id>
-    [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+function mocker_logs() { #HELP View logs from a container:\nMOCKER logs <container_id>
+    [[ "$(mocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
     cat "$btrfs_path/$1/$1.log"
 }
 
-function bocker_commit() { #HELP Commit a container to an image:\nBOCKER commit <container_id> <image_id>
-    [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
-    [[ "$(bocker_check "$2")" == 1 ]] && echo "No image named '$2' exists" && exit 1
-    bocker_rm "$2" && btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$2" > /dev/null
+function mocker_commit() { #HELP Commit a container to an image:\nMOCKER commit <container_id> <image_id>
+    [[ "$(mocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+    [[ "$(mocker_check "$2")" == 1 ]] && echo "No image named '$2' exists" && exit 1
+    mocker_rm "$2" && btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$2" > /dev/null
     echo "Created: $2"
 }
 
-function bocker_help() { #HELP Display this message:\nBOCKER help
-    sed -n "s/^.*#HELP\\s//p;" < "$1" | sed "s/\\\\n/\n\t/g;s/$/\n/;s!BOCKER!${1/!/\\!}!g"
+function mocker_help() { #HELP Display this message:\nMOCKER help
+    sed -n "s/^.*#HELP\\s//p;" < "$1" | sed "s/\\\\n/\n\t/g;s/$/\n/;s!MOCKER!${1/!/\\!}!g"
 }
 
 # Entrypoint Switch
-[[ -z "${1-}" ]] && bocker_help "$0"
+[[ -z "${1-}" ]] && mocker_help "$0"
 case $1 in
-    pull|init|rm|images|ps|run|exec|logs|commit) bocker_"$1" "${@:2}" ;;
-    *) bocker_help "$0" ;;
+    pull|init|rm|images|ps|run|exec|logs|commit) mocker_"$1" "${@:2}" ;;
+    *) mocker_help "$0" ;;
 esac
-
