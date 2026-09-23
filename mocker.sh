@@ -211,7 +211,7 @@ function mocker_help() { #HELP Display this message:\nMOCKER help
 
 # Entrypoint Switch
 if [[ -z "${1-}" ]]; then
-  && mocker_help "$0"
+  mocker_help "$0"
   exit 0
 fi
 
