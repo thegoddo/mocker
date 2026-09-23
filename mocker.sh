@@ -210,7 +210,11 @@ function mocker_help() { #HELP Display this message:\nMOCKER help
 }
 
 # Entrypoint Switch
-[[ -z "${1-}" ]] && mocker_help "$0"
+if [[ -z "${1-}" ]]; then
+  && mocker_help "$0"
+  exit 0
+fi
+
 case $1 in
     pull|init|rm|images|ps|run|exec|logs|commit) mocker_"$1" "${@:2}" ;;
     *) mocker_help "$0" ;;
