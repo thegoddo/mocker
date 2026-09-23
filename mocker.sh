@@ -172,3 +172,49 @@ function mocker_exec() {
   nsenter -t "$cid" -m -u -i -n -p chroot "$btrfs_path/$1" "${@:2}"
 }
 
+function bocker_rm() { #HELP Delete an image or container:\nBOCKER rm <image_id or container_id>
+    [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+    btrfs subvolume delete "$btrfs_path/$1" > /dev/null
+    cgdelete -g "$cgroups:/$1" &> /dev/null || true
+    echo "Removed: $1"
+}
+
+function bocker_images() { #HELP List images:\nBOCKER images
+    echo -e "IMAGE_ID\t\tSOURCE"
+    for img in "$btrfs_path"/img_*; do
+        img=$(basename "$img")
+        echo -e "$img\t\t$(cat "$btrfs_path/$img/img.source")"
+    done
+}
+
+function bocker_ps() { #HELP List containers:\nBOCKER ps
+    echo -e "CONTAINER_ID\t\tCOMMAND"
+    for ps in "$btrfs_path"/ps_*; do
+        ps=$(basename "$ps")
+        echo -e "$ps\t\t$(cat "$btrfs_path/$ps/$ps.cmd")"
+    done
+}
+
+function bocker_logs() { #HELP View logs from a container:\nBOCKER logs <container_id>
+    [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+    cat "$btrfs_path/$1/$1.log"
+}
+
+function bocker_commit() { #HELP Commit a container to an image:\nBOCKER commit <container_id> <image_id>
+    [[ "$(bocker_check "$1")" == 1 ]] && echo "No container named '$1' exists" && exit 1
+    [[ "$(bocker_check "$2")" == 1 ]] && echo "No image named '$2' exists" && exit 1
+    bocker_rm "$2" && btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$2" > /dev/null
+    echo "Created: $2"
+}
+
+function bocker_help() { #HELP Display this message:\nBOCKER help
+    sed -n "s/^.*#HELP\\s//p;" < "$1" | sed "s/\\\\n/\n\t/g;s/$/\n/;s!BOCKER!${1/!/\\!}!g"
+}
+
+# Entrypoint Switch
+[[ -z "${1-}" ]] && bocker_help "$0"
+case $1 in
+    pull|init|rm|images|ps|run|exec|logs|commit) bocker_"$1" "${@:2}" ;;
+    *) bocker_help "$0" ;;
+esac
+
