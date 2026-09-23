@@ -120,3 +120,47 @@ function mocker_pull() {
 
     rm -rf "/tmp/$tmp_uuid"
 }
+
+function mocker_run() {
+  uuid="ps_$(shuf -i 42002-42254 -n 1)"
+  [[ "$(mocker_check "$1")" == 1]] && echo "No image named '$1' exists" && exit 1
+  [[ "$(mocker_check "$uuid")" == 0]] && echo "UUID conflict, retrying..." mocker_run "$@"  && return
+  cmd="${@:2}" && ip="$(echo "${uuid: -3"}" | sed 's/0//g')" && mac="${uuid: -3:1}:${uuid: -2}"
+  
+  #Setup Network Interface Pair
+  ip link add dev veth0_"$uuid" type veth peer name veth1_"$uuid"
+  ip link set dev veth0_"$uuid" up
+  ip link set veth0_"$uuid" master bridge0
+
+  # Create Isolated Network Namespace
+  ip netns add netns_"$uuid"
+  ip link set veth1_"$uuid" netns netns_"$uuid"
+  ip netns exec netns_"$uuid" ip link set lo up
+  ip netns exec netns_"$uuid" ip link set veth1_"$uuid" address 02:42:ac:11:00"$mac"
+  ip netns exec netns_"$uuid" ip addr add 10.0.0."$ip"/24 dev veth1_"$uuid"
+  ip netns exec netns_"$uuid" ip link set dev veth1_"$uuid" up
+  ip netns exec netns_"$uuid" ip route add default via 10.0.0.1 
+
+
+  # Create writable Copy-on-Write snapshot
+  btrfs subvolume snapshot "$btrfs_path/$1" "$btrfs_path/$uuid" > /dev/null
+  echo 'nameserver 8.8.8.8'> "$btrfs/$uuid"/etc/resolv.conf
+
+  # Enforce Cgroup Resource Limits
+  cgcreate -g "$cgroups:/$uuid"
+  : "${MOCKER_CPU_SHARE:=512}" && cgset -r cpu.shares="$MOCKER_CPU_SHARE" "$uuid"
+  : "${MOCKER_MEM_LIMIT:=512}" && cgset -r memory.limit_in_bytes="$((BOCKER_MEM_LIMIT * 1000000))"
+
+  # Execute containerized process
+  cgexec -g "$cgroups:$uuid" \
+    ip netns exec netns_"$uuid" \
+    unshare -fmuip --mount-proc \
+    chroot "$btrfs_path/$uuid" \
+    /bin/sh -c "/bin/mount -t proc proc /proc && $cmd" \
+    2>&1 | tee "$btrfs_path/$uuid/$uuid.log" || true
+
+  # Clean up network interfaces after exit
+  ip link del dev veth0_"$uuid"
+  ip netns del netns_"$uuid"
+}
+
