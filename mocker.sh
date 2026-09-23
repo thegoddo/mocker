@@ -164,3 +164,11 @@ function mocker_run() {
   ip netns del netns_"$uuid"
 }
 
+
+function mocker_exec() {
+  [[ "$(mocker_check "$1")" == 1]] && echo "No container named '$1' exists"  && exit 1
+  cid="$(ps 0 ppid, pid | rg "^$(ps o pid, cmd | rg -e "^\ *[0-9]+ unshare.*$1" | awk '{print $1}" | awk '{print $2}')"
+  [[ ! "$cid" =~ ^\ *[0-9]+$ ]] && echo "Container '$1' exists but is not running" && exit 1
+  nsenter -t "$cid" -m -u -i -n -p chroot "$btrfs_path/$1" "${@:2}"
+}
+
